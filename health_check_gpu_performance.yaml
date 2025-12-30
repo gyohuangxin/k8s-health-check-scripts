@@ -559,7 +559,7 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.name
-      tolerations:
-      - operator: Exists
-      dnsPolicy: ClusterFirst
-      restartPolicy: Always
+        tolerations:
+        - operator: Exists
+        dnsPolicy: ClusterFirst
+        restartPolicy: Always
