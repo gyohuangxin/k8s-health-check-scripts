@@ -504,8 +504,7 @@ spec:
     spec:
       serviceAccountName: gpu-health-checker-sa
       nodeSelector:
-        # feature.node.kubernetes.io/amd-gpu: "true"
-        kubernetes.io/hostname: smc300x-clt-r4c11-02
+        feature.node.kubernetes.io/amd-gpu: "true"
       tolerations:
         - operator: Exists
       restartPolicy: Always
