@@ -488,73 +488,163 @@ spec:
 #       dnsPolicy: ClusterFirst
 #       restartPolicy: Always
 ---
-apiVersion: batch/v1
-kind: CronJob
+apiVersion: apps/v1
+kind: DaemonSet
 metadata:
-  name: gpu-node-reboot-cronjob
+  name: gpu-node-reboot-agent
   namespace: gpu-health-checker
 spec:
-  # schedule: "0 */3 * * *"  # Run every 3 hours
-  schedule: "* * * * *" # Run every minute for testing
-  jobTemplate:
+  selector:
+    matchLabels:
+      app: gpu-node-reboot-agent
+  template:
+    metadata:
+      labels:
+        app: gpu-node-reboot-agent
     spec:
-      template:
-        spec:
-          serviceAccountName: gpu-health-checker-sa
-          nodeSelector:
-            feature.node.kubernetes.io/amd-gpu: "true"
-          tolerations:
-            - operator: Exists
-          restartPolicy: OnFailure
-          dnsPolicy: ClusterFirst
-          containers:
-            - name: node-reboot-checker
-              image: ghcr.io/nod-ai/ossci-gitops/rocm-dev:main
-              command:
-                - python3
-                - -u
-                - -c
-                - |
-                  import os
-                  from kubernetes import client, config
+      serviceAccountName: gpu-health-checker-sa
+      nodeSelector:
+        # feature.node.kubernetes.io/amd-gpu: "true"
+        kubernetes.io/hostname: smc300x-clt-r4c11-02
+      tolerations:
+        - operator: Exists
+      restartPolicy: Always
+      containers:
+        - name: node-reboot-checker
+          image: ghcr.io/nod-ai/ossci-gitops/rocm-dev:main
+          command:
+            - python3
+            - -u
+            - -c
+            - |
+              import os, time
+              from kubernetes import client, config
 
-                  def check_ci_pods_cleaned(node_name, self_pod_name, v1):
-                      print(f"Checking CI pods cleaned up on node {node_name}", flush=True)
-                      pods = v1.list_pod_for_all_namespaces(
-                          field_selector=f"spec.nodeName={node_name}"
-                      ).items
-                      for pod in pods:
-                          if pod.metadata.deletion_timestamp is not None or pod.metadata.name == self_pod_name:
-                              print(f"Pod {pod.metadata.name} is terminating or the current pod ({self_pod_name}). Skipping", flush=True)
-                              continue
-                          if pod.metadata.owner_references:
-                              # If all owners are DaemonSet, skip; if any are not, it's a CI pod
-                              non_daemon = any(
-                                  ref.kind != "DaemonSet" for ref in pod.metadata.owner_references
-                              )
-                              if non_daemon:
-                                  print(f"Pod {pod.metadata.name} is not controlled by DaemonSet", flush=True)
-                                  return False
-                      print(f"All CI pods on node {node_name} are cleaned up", flush=True)
-                      return True
+              def check_ci_pods_cleaned(node_name, self_pod_name, v1):
+                  pods = v1.list_pod_for_all_namespaces(
+                      field_selector=f"spec.nodeName={node_name}"
+                  ).items
+                  for pod in pods:
+                    print(f"Checking pod {pod.metadata.name}", flush=True)
+                    if not pod.metadata.labels:
+                      print(f"Pod {pod.metadata.name} has no labels. Skipping", flush=True)
+                      continue
+                    if pod.metadata.labels.get("actions-ephemeral-runner") == "True":
+                      print(f"Pod {pod.metadata.name} is an actions-ephemeral-runner pod. So, CI pods are not cleaned up.", flush=True)
+                      return False
+                    if pod.metadata.labels.get("jenkins") == "slave":
+                      print(f"Pod {pod.metadata.name} is a Jenkins slave pod. So, CI pods are not cleaned up.", flush=True)
+                      return False
+                  print(f"All CI pods on node {node_name} are cleaned up", flush=True)
+                  return True
 
-                  if __name__ == "__main__":
-                      node_name = os.getenv("NODE_NAME")
-                      self_pod_name = os.getenv("POD_NAME")
-                      config.load_incluster_config()
-                      v1 = client.CoreV1Api()
-                      pods_remain = check_pods_remain(node_name, self_pod_name, v1)
-                      print(f"Checked node {node_name}: pods remaining: {pods_remain}", flush=True)
-                      if pods_remain:
-                          print(f"No CI job pods remaining on node {node_name}. Rebooting...", flush=True)
-                          # TODO: Call actual reboot logic
+              def drain_node(node_name):
+                 # TODO: Implement the drain node logic
+                 pass
+                 
+              def reboot_node(node_name):
+                print(f"Rebooting node {node_name}", flush=True)
+                try:
+                  print(f"Draining node {node_name}", flush=True)
+                  drain_node(node_name)
+                  time.sleep(10)
+                except Exception as e:
+                  print(f"Error draining node {node_name}: {e}. Skipping...", flush=True)
+                  return
+                try:
+                  print(f"Trying to reboot node {node_name} by running platypi", flush=True)
+                  import subprocess
+                  subprocess.run(["python3", "-m", "pip", "install", "platypi", "--extra-index-url", "https://mkmartifactory.amd.com/artifactory/api/pypi/hw-orc3pypi-prod-local/simple", "--trusted-host", "mkmartifactory.amd.com", "--upgrade"], check=True)
+                  subprocess.run(["platypi", node_name, "cold_reset"], check=True)
+                  print(f"Node {node_name} rebooted successfully", flush=True)
+                except Exception as e:
+                  print(f"Error rebooting node {node_name} by running platypi: {e}", flush=True)
+                  import subprocess
+                  print(f"Trying to reboot node {node_name} by running nsenter --target 1 --mount --uts --ipc --net --pid reboot", flush=True)
+                  subprocess.run(["nsenter", "--target", "1", "--mount", "--uts", "--ipc", "--net", "--pid", "reboot"], check=True)
+                  print(f"Node {node_name} rebooted successfully", flush=True)
+                  return
 
-              env:
-                - name: NODE_NAME
-                  valueFrom:
-                    fieldRef:
-                      fieldPath: spec.nodeName
-                - name: POD_NAME
-                  valueFrom:
-                    fieldRef:
-                      fieldPath: metadata.name
+              if __name__ == "__main__":
+                  print(f"Sleeping for 3 hours before checking CI pods cleaned up on node {node_name}", flush=True)
+                  time.sleep(3 * 60 * 60) # every 3 hours
+                  node_name = os.getenv("NODE_NAME")
+                  self_pod_name = os.getenv("POD_NAME")
+                  config.load_incluster_config()
+                  v1 = client.CoreV1Api()
+                  while True:
+                    try: 
+                        print(f"\n\nChecking CI pods cleaned up on node {node_name}", flush=True)
+                        ci_pods_cleaned_up = check_ci_pods_cleaned(node_name, self_pod_name, v1)
+                        print(f"Checked node {node_name}: CI pods cleaned up: {ci_pods_cleaned_up}", flush=True)
+                        if ci_pods_cleaned_up:
+                            print(f"All CI pods on node {node_name} are cleaned up. Rebooting node {node_name}...", flush=True)
+                            reboot_node(node_name)
+                    except Exception as e:
+                      print(f"Error checking CI pods cleaned up on node {node_name}: {e}. Sleeping for 15 seconds and continuing...", flush=True)
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          image: ghcr.io/nod-ai/ossci-gitops/rocm-dev:main
+          imagePullPolicy: IfNotPresent
+          resources:
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          securityContext:
+            privileged: true
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          volumeMounts:
+          - mountPath: /run/systemd
+            name: reboot-1
+          - mountPath: /bin/systemctl
+            name: reboot-2
+          - mountPath: /var/run/dbus/system_bus_socket
+            name: reboot-3
+          - mountPath: /sys/fs/cgroup
+            name: reboot-4
+          - mountPath: /lib/modules
+            name: module-load
+          - mountPath: /dev
+            name: device-files
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      hostPID: true
+      hostNetwork: true
+      terminationGracePeriodSeconds: 30
+      tolerations:
+      - operator: Exists
+      volumes:
+      - hostPath:
+          path: /run/systemd
+          type: ""
+        name: reboot-1
+      - hostPath:
+          path: /bin/systemctl
+          type: ""
+        name: reboot-2
+      - hostPath:
+          path: /var/run/dbus/system_bus_socket
+          type: ""
+        name: reboot-3
+      - hostPath:
+          path: /sys/fs/cgroup
+          type: ""
+        name: reboot-4
+      - hostPath:
+          path: /lib/modules
+          type: ""
+        name: module-load
+      - hostPath:
+          path: /dev
+          type: ""
+        name: device-files
