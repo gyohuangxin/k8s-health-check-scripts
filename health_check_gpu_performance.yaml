@@ -518,8 +518,8 @@ spec:
                   import os
                   from kubernetes import client, config
 
-                  def check_pods_remain(node_name, self_pod_name, v1):
-                      print(f"Checking pods remain on node {node_name}", flush=True)
+                  def check_ci_pods_cleaned(node_name, self_pod_name, v1):
+                      print(f"Checking CI pods cleaned up on node {node_name}", flush=True)
                       pods = v1.list_pod_for_all_namespaces(
                           field_selector=f"spec.nodeName={node_name}"
                       ).items
@@ -535,7 +535,7 @@ spec:
                               if non_daemon:
                                   print(f"Pod {pod.metadata.name} is not controlled by DaemonSet", flush=True)
                                   return False
-                      print(f"All pods on node {node_name} are controlled by DaemonSet", flush=True)
+                      print(f"All CI pods on node {node_name} are cleaned up", flush=True)
                       return True
 
                   if __name__ == "__main__":
