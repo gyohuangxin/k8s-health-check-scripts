@@ -1,0 +1,565 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gpu-health-checker-sa
+  namespace: gpu-health-checker
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gpu-health-checker-role
+rules:
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "list", "watch", "patch"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gpu-health-checker-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: gpu-health-checker-role
+subjects:
+- kind: ServiceAccount
+  name: gpu-health-checker-sa
+  namespace: gpu-health-checker
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: gpu-health-checker
+  namespace: gpu-health-checker
+spec:
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: gpu-health-checker
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        app: gpu-health-checker
+    spec:
+      serviceAccountName: gpu-health-checker-sa # Ensure the service account exists in the namespace
+      nodeSelector:
+        feature.node.kubernetes.io/amd-gpu: "true"
+      containers:
+      - command:
+        - python3
+        - -c
+        - |
+          import subprocess, time, os, shutil, json
+          from kubernetes import client, config
+
+          def install_system_deps():
+            """
+            Ensure that python and speedtest-cli is installed on the node.
+            If not installed, the function attempts to install it using 'apt'.
+            """
+            os.system("sudo apt update && sudo apt install -y apt-transport-https ca-certificates")
+            os.system("sudo cp /etc/apt/sources.list /etc/apt/sources.list.bak")
+            os.system("sudo sed -i 's|http://|https://|g' /etc/apt/sources.list")
+            os.system("sudo apt update")
+            os.system("sudo apt install --reinstall -y python3.10")
+            print("Checking if speedtest-cli is installed...")
+            if shutil.which("speedtest-cli") is None:
+                print("speedtest-cli is not installed. Installing it...")
+                try:
+                    os.system("sudo apt update")
+                    os.system("sudo apt install -y speedtest-cli")
+                    print("speedtest-cli installed successfully!")
+                except subprocess.CalledProcessError as e:
+                    print(f"Failed to install speedtest-cli: {e}")
+                    exit(1)  # Exit the script if installation fails
+            else:
+                print("speedtest-cli is already installed.")
+
+          def check_gpu_health():
+            """
+            Check the health of the GPU using rocm-smi and rocminfo.
+            Returns True if both commands succeed, False otherwise.
+            """
+            print("Running GPU health checks...")
+            try:
+                subprocess.run(
+                    ["rocm-smi"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    timeout=5,
+                    check=True,
+                )
+            except subprocess.TimeoutExpired:
+                print("GPU health check failed! rocm-smi timeout.")
+                return False
+            except subprocess.CalledProcessError as e:
+                print("GPU health check failed! rocm-smi error:", e.stdout)
+                return False
+
+            try:
+                subprocess.run(
+                    ["rocminfo"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    timeout=5,
+                    check=True,
+                )
+            except subprocess.TimeoutExpired:
+                print("GPU health check failed! rocminfo timeout.")
+                return False
+            except subprocess.CalledProcessError as e:
+                print("GPU health check failed! rocminfo error:", e.stdout)
+                return False
+
+            print("GPU health check passed!")
+            return True
+
+          def check_gpu_performance():
+            """
+            Check for GPU performance issue by checking dmesg output.
+            Returns True if no performance issue is detected, False otherwise.
+            """
+            # Check for ROCm/AMDGPU oversubscription and evicted queue messages in kernel log
+            oversub_msg = "Runlist is getting oversubscribed due to too many queues"
+            evicted_msg = "amdgpu: Freeing queue vital buffer"
+            hw_exception_msg = "HW Exception by GPU"
+            gpu_hang_or_mem_fault_msg = "GPU Hang or Memory access fault by GPU"
+            dmesg_out = ""
+            try:
+                dmesg_out = subprocess.check_output(
+                    ["dmesg", "--color=never", "-T", "|", "tail", "-n", "100"],
+                    stderr=subprocess.STDOUT,
+                    text=True, shell=True
+                )
+            except Exception as dmerr:
+                print("Could not run dmesg: ", dmerr)
+            log_alert_found = False
+            if oversub_msg in dmesg_out:
+                print("GPU performance check failed! Detected ROCm runlist oversubscription in logs.")
+                log_alert_found = True
+            elif evicted_msg in dmesg_out:
+                print("GPU performance check failed! Detected ROCm queue evicted buffer in logs.")
+                log_alert_found = True
+            elif hw_exception_msg in dmesg_out:
+                print("GPU performance check failed! Detected HW Exception in logs.")
+                log_alert_found = True
+            elif gpu_hang_or_mem_fault_msg in dmesg_out:
+                print("GPU performance check failed! Detected GPU Hang or Memory access fault in logs.")
+                log_alert_found = True
+            if log_alert_found:
+                return False
+            return True
+            
+          def check_network_health():
+            """
+            Check the health of the network by running a speed test.
+            Returns True if download and upload speeds meet thresholds, False otherwise.
+            """
+            DOWNLOAD_THRESHOLD = 100.0
+            UPLOAD_THRESHOLD = 50.0
+            try:
+                print("Running network speed test...")
+                result = subprocess.run(
+                    ['speedtest-cli', '--json'],
+                    capture_output=True,
+                    text=True,
+                    check=True
+                )
+                print(f"Raw output: {result.stdout}")
+                speed_data = json.loads(result.stdout)
+
+                # Access the download and upload speeds (in bits per second)
+                download_speed = speed_data['download'] / 1_000_000  # Convert to Mbps
+                upload_speed = speed_data['upload'] / 1_000_000      # Convert to Mbps
+
+                print(f"Download Speed: {download_speed:.2f} Mbps")
+                print(f"Upload Speed: {upload_speed:.2f} Mbps")
+
+                if download_speed >= DOWNLOAD_THRESHOLD and upload_speed >= UPLOAD_THRESHOLD:
+                    print("Network speed is healthy!")
+                    return True
+                else:
+                    print("Network speed is below threshold!")
+                    return False
+            except (subprocess.CalledProcessError, KeyError, json.JSONDecodeError) as e:
+                print(f"Error during network health check: {e}")
+                print("Network speed check is being skipped on this node.")
+                return True
+
+          def taint_node(node_name, taint_key, action="add"):
+            print(f"'{action}'ing taint: '{taint_key}' on node: '{node_name}'.")
+            config.load_incluster_config()
+            v1 = client.CoreV1Api()
+            node = v1.read_node(node_name)
+            current_taints = node.spec.taints or []
+            if action == "remove":
+                filtered_taints = [taint for taint in current_taints if taint.key != taint_key]
+                body = {
+                    "spec": {
+                        "taints": filtered_taints
+                    }
+                }
+            else:
+                if any(taint.key == taint_key for taint in current_taints):
+                    print(f"Taint with key '{taint_key}' already exists on node '{node_name}'.")
+                    return
+                # Checking for any existing 'repair' taints
+                elif "repair" in taint_key and any("repair" in taint.key for taint in current_taints):
+                    print(f"Repair taint already exists on node '{node_name}'.")
+                    return
+                else:
+                    current_taints.append({
+                        "key": taint_key,
+                        "effect": "NoSchedule"
+                    })
+                    body = {
+                        "spec": {
+                            "taints": current_taints
+                        }
+                    }
+            v1.patch_node(node_name, body)
+
+          def label_node(node_name, label_key, label_value, action="add"):
+            """
+            Apply or remove a label on the specified node.
+            Only adds the label if it does not already exist with the same value.
+            """
+            print(f"'{action}'ing label: '{label_key}' on node: '{node_name}'.")
+            config.load_incluster_config()
+            v1 = client.CoreV1Api()
+            node = v1.read_node(node_name)
+            current_labels = node.metadata.labels or {}
+            current_taints = node.spec.taints or []
+
+            if action == "remove":
+                if label_key in current_labels:
+                  print(f"Removing label: {label_key}")
+                  body = {
+                    "metadata": {
+                      "labels": {label_key: None}
+                    }
+                  }
+                  v1.patch_node(node_name, body)
+                else:
+                    print(f"Label with key '{label_key}' does not exist on node '{node_name}'.")
+            elif action == "add":
+                if current_labels.get(label_key) == label_value:
+                    print(f"Label with key '{label_key}' and value '{label_value}' already exists on node '{node_name}'.")
+                    return
+                else:
+                    current_labels[label_key] = label_value
+                    body = {
+                        "metadata": {
+                            "labels": current_labels
+                        }
+                    }
+                    v1.patch_node(node_name, body)
+                    print(f"Label with key '{label_key}' and value '{label_value}' added to node '{node_name}'.")
+            elif action == "increment":
+              if label_key in current_labels:
+                  try:
+                      current_value = int(current_labels[label_key])
+                      if any("repair" in taint.key for taint in current_taints):
+                        return
+                      current_labels[label_key] = str(current_value + 1)
+                  except ValueError:
+                      print(f"Label {label_key} has a non-integer value; resetting to 1.")
+                      current_labels[label_key] = "1"
+              else:
+                  current_labels[label_key] = "1"
+
+              body = {
+                  "metadata": {
+                      "labels": current_labels
+                  }
+              }
+              v1.patch_node(node_name, body)
+
+          if __name__ == "__main__":
+              node_name = os.getenv('NODE_NAME')
+              install_system_deps()
+              while True:
+                gpu_healthy = check_gpu_health()
+                gpu_performance = check_gpu_performance()
+                network_healthy = check_network_health()
+
+                if not gpu_healthy:
+                    print(f"GPU health check failed! Incrementing label: 'gpu-failure' on node: '{node_name}'. Tainting node: '{node_name}' with key: 'repair-reboot' and action: 'add'.")
+                    label_node(node_name, "gpu-failure", "true", action="increment")
+                    taint_node(node_name, "repair-reboot", action="add")
+                else:
+                    print(f"GPU health check passed! Removing taint: 'repair-reboot' from node: '{node_name}'.")
+                    taint_node(node_name, "repair-reboot", action="remove")
+
+                if not gpu_performance:
+                    print(f"GPU performance check failed! Adding label: 'gpu-performance-issue' on node: '{node_name}'.")
+                    label_node(node_name, "gpu-performance-issue", "true", action="add")
+                else:
+                    print(f"GPU performance check passed! Removing label: 'gpu-performance-issue' from node: '{node_name}'.")
+                    label_node(node_name, "gpu-performance-issue", "true", action="remove")
+
+                if not network_healthy:
+                    print(f"Network speed check failed! Adding label: 'network-slow' on node: '{node_name}'.")
+                    label_node(node_name, "network-slow", "true", action="add")
+                else:
+                    print(f"Network speed check passed! Removing label: 'network-slow' from node: '{node_name}'.")
+                    label_node(node_name, "network-slow", "true", action="remove")
+                time.sleep(30)
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: spec.nodeName
+        image: ghcr.io/nod-ai/ossci-gitops/rocm-dev:main
+        imagePullPolicy: IfNotPresent
+        name: gpu-health-checker
+        resources:
+          limits:
+            cpu: "1"
+            memory: 512Mi
+        securityContext:
+          privileged: true
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /run/systemd
+          name: reboot-1
+        - mountPath: /bin/systemctl
+          name: reboot-2
+        - mountPath: /var/run/dbus/system_bus_socket
+          name: reboot-3
+        - mountPath: /sys/fs/cgroup
+          name: reboot-4
+        - mountPath: /lib/modules
+          name: module-load
+        - mountPath: /dev
+          name: device-files
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30
+      tolerations:
+      - operator: Exists
+      volumes:
+      - hostPath:
+          path: /run/systemd
+          type: ""
+        name: reboot-1
+      - hostPath:
+          path: /bin/systemctl
+          type: ""
+        name: reboot-2
+      - hostPath:
+          path: /var/run/dbus/system_bus_socket
+          type: ""
+        name: reboot-3
+      - hostPath:
+          path: /sys/fs/cgroup
+          type: ""
+        name: reboot-4
+      - hostPath:
+          path: /lib/modules
+          type: ""
+        name: module-load
+      - hostPath:
+          path: /dev
+          type: ""
+        name: device-files
+  updateStrategy:
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 50%
+    type: RollingUpdate
+---
+# apiVersion: apps/v1
+# kind: DaemonSet
+# metadata:
+#   name: gpu-reboot-helper
+#   namespace: gpu-health-checker
+# spec:
+#   selector:
+#     matchLabels:
+#       app: gpu-reboot-helper
+#   template:
+#     metadata:
+#       labels:
+#         app: gpu-reboot-helper
+#     spec:
+#       serviceAccountName: gpu-health-checker-sa
+#       nodeSelector:
+#         feature.node.kubernetes.io/amd-gpu: "true"
+#       containers:
+#       - name: gpu-reboot-helper
+#         image: ghcr.io/nod-ai/ossci-gitops/rocm-dev:main
+#         command:
+#         - python3
+#         - -u
+#         - -c
+#         - |
+#           import time
+#           import os
+#           import json
+#           from kubernetes import client, config
+# 
+#           # Run inside the pod: use in-cluster config
+#           config.load_incluster_config()
+#           v1 = client.CoreV1Api()
+#           field_selector = f"spec.nodeName={os.environ['MY_NODE_NAME']}" if 'MY_NODE_NAME' in os.environ else None
+#           this_ds_pod_name = os.environ.get('MY_POD_NAME')
+# 
+#           # Get this node's name
+#           node_name = os.environ.get('MY_NODE_NAME')
+#           print("Starting reboot helper on", node_name, flush=True)
+# 
+#           # Check if the node has the repair-reboot taint
+#           def has_reboot_taint(node):
+#               if not node or not node.spec.taints:
+#                   return False
+#               for taint in node.spec.taints:
+#                   if taint.key == "repair-reboot":
+#                       return True
+#               return False
+# 
+#           # Check if only daemonset pods remain on the node
+#           def check_pods_remain(node_name, self_pod_name):
+#               pods = v1.list_pod_for_all_namespaces(field_selector=f"spec.nodeName={node_name}").items
+#               for pod in pods:
+#                   # Ignore terminating pods and the current pod
+#                   if pod.metadata.deletion_timestamp is not None or pod.metadata.name == self_pod_name:
+#                       continue
+#                   # Ignore pods controlled by DaemonSet
+#                   if pod.metadata.owner_references:
+#                       for ref in pod.metadata.owner_references:
+#                           if ref.kind == "DaemonSet":
+#                             continue
+#                           else:
+#                             return False
+#               return True
+#         
+#           # TODO: Implement the reboot node logic
+#           def reboot_node(node_name):
+#             print(f"Rebooting node {node_name}", flush=True)
+#             try:
+#               print(f"Trying to reboot node {node_name} by running platypi", flush=True)
+#               subprocess.run(["python3", "-m", "pip", "install", "virtualenv"], check=True)
+#               subprocess.run(["python3", "-m", "virtualenv", "venv"], check=True)
+#               subprocess.run(["venv/bin/activate"], check=True)
+#               subprocess.run(["python3", "-m", "pip", "install", "platypi", "--extra-index-url", "https://mkmartifactory.amd.com/artifactory/api/pypi/hw-orc3pypi-prod-local/simple", "--trusted-host", "mkmartifactory.amd.com", "--upgrade"], check=True)
+#               subprocess.run(["platypi", node_name, "--reboot"], check=True)
+#               print(f"Node {node_name} rebooted successfully", flush=True)
+#             except Exception as e:
+#               print(f"Error rebooting node {node_name}: {e}", flush=True)
+# 
+#           if __name__ == "__main__":
+#             node_name = os.getenv('MY_NODE_NAME')
+#             while True:
+#               try:
+#                 node = v1.read_node(node_name)
+#                 taint_found = has_reboot_taint(node)
+#                 pods_remain = check_pods_remain(node_name, this_ds_pod_name)
+#                 print(f"Checked node {node_name}: repair-reboot taint: {taint_found}; pods remaining: {pods_remain}", flush=True)
+#                 if taint_found and not pods_remain:
+#                   print(f"Rebooting node {node_name} due to repair-reboot taint and no pods remaining", flush=True)
+#                   reboot_node(node_name)
+#                 else:
+#                   print(f"No action needed for node {node_name}", flush=True)
+#               except Exception as e:
+#                 print("Error checking node status:", str(e), flush=True)
+#               time.sleep(15)
+#         env:
+#         - name: MY_NODE_NAME
+#           valueFrom:
+#             fieldRef:
+#               fieldPath: spec.nodeName
+#         - name: MY_POD_NAME
+#           valueFrom:
+#             fieldRef:
+#               fieldPath: metadata.name
+#       tolerations:
+#       - operator: Exists
+#       dnsPolicy: ClusterFirst
+#       restartPolicy: Always
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: gpu-node-reboot-cronjob
+  namespace: gpu-health-checker
+spec:
+  # schedule: "0 */3 * * *"  # Run every 3 hours
+  schedule: "* * * * *" # Run every minute for testing
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: gpu-health-checker-sa
+          nodeSelector:
+            feature.node.kubernetes.io/amd-gpu: "true"
+          restartPolicy: OnFailure
+          tolerations:
+          - operator: Exists
+          containers:
+          - name: node-reboot-checker
+            image: ghcr.io/nod-ai/ossci-gitops/rocm-dev:main
+            command:
+            - python3
+            - -u
+            - -c
+            - |
+              import time
+              import os
+              import json
+              from kubernetes import client, config
+ 
+              # Check if only daemonset pods remain on the node
+              def check_pods_remain(node_name, self_pod_name):
+                print(f"Checking pods remain on node {node_name}", flush=True)
+                config.load_incluster_config()
+                v1 = client.CoreV1Api()
+                pods = v1.list_pod_for_all_namespaces(field_selector=f"spec.nodeName={node_name}").items
+                for pod in pods:
+                    # Ignore terminating pods and the current pod
+                    if pod.metadata.deletion_timestamp is not None or pod.metadata.name == self_pod_name:
+                        print(f"Pod {pod.metadata.name} is terminating or the current pod. Skipping", flush=True)
+                        continue
+                    # Ignore pods controlled by DaemonSet
+                    if pod.metadata.owner_references:
+                        for ref in pod.metadata.owner_references:
+                            if ref.kind == "DaemonSet":
+                                continue
+                            else:
+                                print(f"Pod {pod.metadata.name} is not controlled by DaemonSet", flush=True)
+                                return False
+                print(f"All pods on node {node_name} are controlled by DaemonSet", flush=True)
+                return True
+ 
+              if __name__ == "__main__":
+                node_name = os.getenv('NODE_NAME')
+                self_pod_name = os.getenv('POD_NAME')
+                while True:
+                  pods_remain = check_pods_remain(node_name, self_pod_name)
+                  print(f"Checked node {node_name}: pods remaining: {pods_remain}", flush=True)
+                  if pods_remain:
+                    print(f"No CI job pods remaining on node {node_name}. Rebooting...", flush=True)
+                  time.sleep(15)
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+      tolerations:
+      - operator: Exists
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
