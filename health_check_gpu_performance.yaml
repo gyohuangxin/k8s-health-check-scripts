@@ -503,63 +503,58 @@ spec:
           serviceAccountName: gpu-health-checker-sa
           nodeSelector:
             feature.node.kubernetes.io/amd-gpu: "true"
+          tolerations:
+            - operator: Exists
           restartPolicy: OnFailure
-          tolerations:
-          - operator: Exists
-          containers:
-          - name: node-reboot-checker
-            image: ghcr.io/nod-ai/ossci-gitops/rocm-dev:main
-            command:
-            - python3
-            - -u
-            - -c
-            - |
-              import time
-              import os
-              import json
-              from kubernetes import client, config
- 
-              # Check if only daemonset pods remain on the node
-              def check_pods_remain(node_name, self_pod_name):
-                print(f"Checking pods remain on node {node_name}", flush=True)
-                config.load_incluster_config()
-                v1 = client.CoreV1Api()
-                pods = v1.list_pod_for_all_namespaces(field_selector=f"spec.nodeName={node_name}").items
-                for pod in pods:
-                    # Ignore terminating pods and the current pod
-                    if pod.metadata.deletion_timestamp is not None or pod.metadata.name == self_pod_name:
-                        print(f"Pod {pod.metadata.name} is terminating or the current pod. Skipping", flush=True)
-                        continue
-                    # Ignore pods controlled by DaemonSet
-                    if pod.metadata.owner_references:
-                        for ref in pod.metadata.owner_references:
-                            if ref.kind == "DaemonSet":
-                                continue
-                            else:
-                                print(f"Pod {pod.metadata.name} is not controlled by DaemonSet", flush=True)
-                                return False
-                print(f"All pods on node {node_name} are controlled by DaemonSet", flush=True)
-                return True
- 
-              if __name__ == "__main__":
-                node_name = os.getenv('NODE_NAME')
-                self_pod_name = os.getenv('POD_NAME')
-                while True:
-                  pods_remain = check_pods_remain(node_name, self_pod_name)
-                  print(f"Checked node {node_name}: pods remaining: {pods_remain}", flush=True)
-                  if pods_remain:
-                    print(f"No CI job pods remaining on node {node_name}. Rebooting...", flush=True)
-                  time.sleep(15)
-          env:
-          - name: NODE_NAME
-            valueFrom:
-              fieldRef:
-                fieldPath: spec.nodeName
-          - name: POD_NAME
-            valueFrom:
-              fieldRef:
-                fieldPath: metadata.name
-          tolerations:
-          - operator: Exists  
           dnsPolicy: ClusterFirst
-          restartPolicy: Always
+          containers:
+            - name: node-reboot-checker
+              image: ghcr.io/nod-ai/ossci-gitops/rocm-dev:main
+              command:
+                - python3
+                - -u
+                - -c
+                - |
+                  import os
+                  from kubernetes import client, config
+
+                  def check_pods_remain(node_name, self_pod_name, v1):
+                      print(f"Checking pods remain on node {node_name}", flush=True)
+                      pods = v1.list_pod_for_all_namespaces(
+                          field_selector=f"spec.nodeName={node_name}"
+                      ).items
+                      for pod in pods:
+                          if pod.metadata.deletion_timestamp is not None or pod.metadata.name == self_pod_name:
+                              print(f"Pod {pod.metadata.name} is terminating or the current pod. Skipping", flush=True)
+                              continue
+                          if pod.metadata.owner_references:
+                              # If all owners are DaemonSet, skip; if any are not, it's a CI pod
+                              non_daemon = any(
+                                  ref.kind != "DaemonSet" for ref in pod.metadata.owner_references
+                              )
+                              if non_daemon:
+                                  print(f"Pod {pod.metadata.name} is not controlled by DaemonSet", flush=True)
+                                  return False
+                      print(f"All pods on node {node_name} are controlled by DaemonSet", flush=True)
+                      return True
+
+                  if __name__ == "__main__":
+                      node_name = os.getenv("NODE_NAME")
+                      self_pod_name = os.getenv("POD_NAME")
+                      config.load_incluster_config()
+                      v1 = client.CoreV1Api()
+                      pods_remain = check_pods_remain(node_name, self_pod_name, v1)
+                      print(f"Checked node {node_name}: pods remaining: {pods_remain}", flush=True)
+                      if pods_remain:
+                          print(f"No CI job pods remaining on node {node_name}. Rebooting...", flush=True)
+                          # TODO: Call actual reboot logic
+
+              env:
+                - name: NODE_NAME
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: spec.nodeName
+                - name: POD_NAME
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.name
