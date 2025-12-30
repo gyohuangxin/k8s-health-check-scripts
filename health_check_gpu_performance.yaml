@@ -525,7 +525,7 @@ spec:
                       ).items
                       for pod in pods:
                           if pod.metadata.deletion_timestamp is not None or pod.metadata.name == self_pod_name:
-                              print(f"Pod {pod.metadata.name} is terminating or the current pod. Skipping", flush=True)
+                              print(f"Pod {pod.metadata.name} is terminating or the current pod ({self_pod_name}). Skipping", flush=True)
                               continue
                           if pod.metadata.owner_references:
                               # If all owners are DaemonSet, skip; if any are not, it's a CI pod
