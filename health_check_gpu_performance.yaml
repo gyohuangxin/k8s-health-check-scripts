@@ -566,13 +566,19 @@ spec:
 
               if __name__ == "__main__":
                   node_name = os.getenv("NODE_NAME")
-                  print(f"Sleeping for 3 hours before checking CI pods cleaned up on node {node_name}", flush=True)
-                  time.sleep(3 * 60 * 60) # every 3 hours
                   self_pod_name = os.getenv("POD_NAME")
                   config.load_incluster_config()
                   v1 = client.CoreV1Api()
                   while True:
                     try: 
+                        # check if node is in cordoned state, if so, skip reboot and return
+                        node = v1.read_node(node_name)
+                        if node.spec.unschedulable:
+                          print(f"Node {node_name} is in cordoned state. Skipping reboot and returning...", flush=True)
+                          time.sleep(60)
+                          continue
+                        print(f"\n\nSleeping for 3 hours before checking CI pods cleaned up on node {node_name}", flush=True)
+                        time.sleep(3 * 60 * 60) # every 3 hours
                         print(f"\n\nChecking CI pods cleaned up on node {node_name}", flush=True)
                         ci_pods_cleaned_up = check_ci_pods_cleaned(node_name, self_pod_name, v1)
                         print(f"Checked node {node_name}: CI pods cleaned up: {ci_pods_cleaned_up}", flush=True)
