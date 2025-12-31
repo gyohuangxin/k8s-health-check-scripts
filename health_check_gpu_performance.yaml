@@ -565,9 +565,9 @@ spec:
                   return
 
               if __name__ == "__main__":
+                  node_name = os.getenv("NODE_NAME")
                   print(f"Sleeping for 3 hours before checking CI pods cleaned up on node {node_name}", flush=True)
                   time.sleep(3 * 60 * 60) # every 3 hours
-                  node_name = os.getenv("NODE_NAME")
                   self_pod_name = os.getenv("POD_NAME")
                   config.load_incluster_config()
                   v1 = client.CoreV1Api()
