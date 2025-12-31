@@ -19,3 +19,41 @@ Another DaemonSet that checks for running CI workload pods (e.g., `actions-ephem
 ```bash
 kubectl apply -f health_check_gpu_performance.yaml
 ```
+
+## Behavior example
+
+If all CI jobs have been cleaned up, the node will be rebooted using Platipy; if Platipy fails, a system reboot will be used as a fallback.
+
+```
+
+```
+
+If CI jobs is not cleaned up, it will skip rebooting:
+```
+│ Checking CI pods cleaned up on node ml-ci-internal-old                                                                                                       │
+│ Checking pod calico-node-mm7c4                                                                                                                               │
+│ Checking pod node-debugger-ml-ci-internal-old-hc96g                                                                                                          │
+│ Pod node-debugger-ml-ci-internal-old-hc96g has no labels. Skipping                                                                                           │
+│ Checking pod gpu-health-checker-lkwgt                                                                                                                        │
+│ Checking pod gpu-node-reboot-agent-9hh2l                                                                                                                     │
+│ Checking pod harbor-artifactory-cert-installer-v2sc7                                                                                                         │
+│ Checking pod k8s-build-cluster-btk84                                                                                                                         │
+│ Pod k8s-build-cluster-btk84 is a Jenkins slave pod. So, CI pods are not cleaned up.                                                                          │
+│ Checked node ml-ci-internal-old: CI pods cleaned up: False  
+```
+
+If a node is already in a cordoned state, this indicates it may be under repair or reserved for other use, so the reboot will be skipped.
+
+```
+│
+│ Node smci355-ccs-aus-n15-25 is in cordoned state. Skipping reboot and returning...                                                                           │
+│ Node smci355-ccs-aus-n15-25 is in cordoned state. Skipping reboot and returning...                                                                           │
+│ Node smci355-ccs-aus-n15-25 is in cordoned state. Skipping reboot and returning...                                                                           │
+│ Node smci355-ccs-aus-n15-25 is in cordoned state. Skipping reboot and returning...                                                                           │
+│ Node smci355-ccs-aus-n15-25 is in cordoned state. Skipping reboot and returning...
+```
+
+
+## TODO
+
+- [ ] Implement node draining before rebooting the machine. Rebooting without draining may cause disruption to running workloads.

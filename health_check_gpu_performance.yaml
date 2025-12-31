@@ -379,115 +379,6 @@ spec:
       maxUnavailable: 50%
     type: RollingUpdate
 ---
-# apiVersion: apps/v1
-# kind: DaemonSet
-# metadata:
-#   name: gpu-reboot-helper
-#   namespace: gpu-health-checker
-# spec:
-#   selector:
-#     matchLabels:
-#       app: gpu-reboot-helper
-#   template:
-#     metadata:
-#       labels:
-#         app: gpu-reboot-helper
-#     spec:
-#       serviceAccountName: gpu-health-checker-sa
-#       nodeSelector:
-#         feature.node.kubernetes.io/amd-gpu: "true"
-#       containers:
-#       - name: gpu-reboot-helper
-#         image: ghcr.io/nod-ai/ossci-gitops/rocm-dev:main
-#         command:
-#         - python3
-#         - -u
-#         - -c
-#         - |
-#           import time
-#           import os
-#           import json
-#           from kubernetes import client, config
-# 
-#           # Run inside the pod: use in-cluster config
-#           config.load_incluster_config()
-#           v1 = client.CoreV1Api()
-#           field_selector = f"spec.nodeName={os.environ['MY_NODE_NAME']}" if 'MY_NODE_NAME' in os.environ else None
-#           this_ds_pod_name = os.environ.get('MY_POD_NAME')
-# 
-#           # Get this node's name
-#           node_name = os.environ.get('MY_NODE_NAME')
-#           print("Starting reboot helper on", node_name, flush=True)
-# 
-#           # Check if the node has the repair-reboot taint
-#           def has_reboot_taint(node):
-#               if not node or not node.spec.taints:
-#                   return False
-#               for taint in node.spec.taints:
-#                   if taint.key == "repair-reboot":
-#                       return True
-#               return False
-# 
-#           # Check if only daemonset pods remain on the node
-#           def check_pods_remain(node_name, self_pod_name):
-#               pods = v1.list_pod_for_all_namespaces(field_selector=f"spec.nodeName={node_name}").items
-#               for pod in pods:
-#                   # Ignore terminating pods and the current pod
-#                   if pod.metadata.deletion_timestamp is not None or pod.metadata.name == self_pod_name:
-#                       continue
-#                   # Ignore pods controlled by DaemonSet
-#                   if pod.metadata.owner_references:
-#                       for ref in pod.metadata.owner_references:
-#                           if ref.kind == "DaemonSet":
-#                             continue
-#                           else:
-#                             return False
-#               return True
-#         
-#           # TODO: Implement the reboot node logic
-#           def reboot_node(node_name):
-#             print(f"Rebooting node {node_name}", flush=True)
-#             try:
-#               print(f"Trying to reboot node {node_name} by running platypi", flush=True)
-#               subprocess.run(["python3", "-m", "pip", "install", "virtualenv"], check=True)
-#               subprocess.run(["python3", "-m", "virtualenv", "venv"], check=True)
-#               subprocess.run(["venv/bin/activate"], check=True)
-#               subprocess.run(["python3", "-m", "pip", "install", "platypi", "--extra-index-url", "https://mkmartifactory.amd.com/artifactory/api/pypi/hw-orc3pypi-prod-local/simple", "--trusted-host", "mkmartifactory.amd.com", "--upgrade"], check=True)
-#               subprocess.run(["platypi", node_name, "--reboot"], check=True)
-#               print(f"Node {node_name} rebooted successfully", flush=True)
-#             except Exception as e:
-#               print(f"Error rebooting node {node_name}: {e}", flush=True)
-# 
-#           if __name__ == "__main__":
-#             node_name = os.getenv('MY_NODE_NAME')
-#             while True:
-#               try:
-#                 node = v1.read_node(node_name)
-#                 taint_found = has_reboot_taint(node)
-#                 pods_remain = check_pods_remain(node_name, this_ds_pod_name)
-#                 print(f"Checked node {node_name}: repair-reboot taint: {taint_found}; pods remaining: {pods_remain}", flush=True)
-#                 if taint_found and not pods_remain:
-#                   print(f"Rebooting node {node_name} due to repair-reboot taint and no pods remaining", flush=True)
-#                   reboot_node(node_name)
-#                 else:
-#                   print(f"No action needed for node {node_name}", flush=True)
-#               except Exception as e:
-#                 print("Error checking node status:", str(e), flush=True)
-#               time.sleep(15)
-#         env:
-#         - name: MY_NODE_NAME
-#           valueFrom:
-#             fieldRef:
-#               fieldPath: spec.nodeName
-#         - name: MY_POD_NAME
-#           valueFrom:
-#             fieldRef:
-#               fieldPath: metadata.name
-#       tolerations:
-#       - operator: Exists
-#       dnsPolicy: ClusterFirst
-#       restartPolicy: Always
----
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -577,8 +468,10 @@ spec:
                           print(f"Node {node_name} is in cordoned state. Skipping reboot and returning...", flush=True)
                           time.sleep(60)
                           continue
-                        print(f"\n\nSleeping for 3 hours before checking CI pods cleaned up on node {node_name}", flush=True)
-                        time.sleep(3 * 60 * 60) # every 3 hours
+                        print(f"\n\nWaiting for 3 hours before checking CI pods cleaned up on node {node_name}", flush=True)
+                        for i in range(180):
+                            time.sleep(60)
+                            print(f"Waited for {(i+1)} minute(s)...", flush=True)
                         print(f"\n\nChecking CI pods cleaned up on node {node_name}", flush=True)
                         ci_pods_cleaned_up = check_ci_pods_cleaned(node_name, self_pod_name, v1)
                         print(f"Checked node {node_name}: CI pods cleaned up: {ci_pods_cleaned_up}", flush=True)
