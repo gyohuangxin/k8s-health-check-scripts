@@ -9,7 +9,7 @@ Main features:
 - Verifies the availability of the `rocm-smi` and `rocminfo` tools to assess GPU health. If the check fails, the node is automatically labeled with `gpu-failure=true` and tainted with `repair-reboot`. 
 - Searches dmesg logs for GPU performance issues such as Runlist oversubscription, evicted queue buffers, hardware exceptions, or GPU hang/memory faults. If the check fails, the node is automatically labeled with `gpu-performance-issue=true`.
 - Assesses the network health of the node by checking bandwidth using `speedtest-cli`. If the check fails, the node is automatically labeled with `network-slow=true`
-- When GPU health problems are detected, the script auto-labels the node (e.g., `gpu-failure`) and applies a `repair-reboot` taint. These taints/labels are removed automatically upon recovery.
+- These taints/labels are removed automatically upon recovery.
 
 **gpu-node-reboot-agent:**  
 Another DaemonSet that checks for running CI workload pods (e.g., `actions-ephemeral-runner` or Jenkins pods) on each GPU node. Every 3 hours, if there are no such pods, it will reboot the node using either the platypi tool or system-level reboots.
