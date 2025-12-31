@@ -25,6 +25,29 @@ kubectl apply -f health_check_gpu_performance.yaml
 If all CI jobs have been cleaned up, the node will be rebooted using Platipy; if Platipy fails, a system reboot will be used as a fallback.
 
 ```
+│ Checking CI pods cleaned up on node ctr-mlse-b40-05                                                                                                          │
+│ Checking pod calico-node-mf7w6                                                                                                                               │
+│ Checking pod node-debugger-ctr-mlse-b40-05-zqwxg                                                                                                             │
+│ Pod node-debugger-ctr-mlse-b40-05-zqwxg has no labels. Skipping                                                                                              │
+│ Checking pod gpu-health-checker-dvg4x                                                                                                                        │
+│ Checking pod gpu-node-reboot-agent-cmb96                                                                                                                     │
+│ Checking pod harbor-artifactory-cert-installer-kddhw                                                                                                         │
+│ Checking pod amd-gpu-operator-node-feature-discovery-worker-9pfpq                                                                                            │
+│ Checking pod default-device-plugin-9xftr                                                                                                                     │
+│ Checking pod default-metrics-exporter-chstd                                                                                                                  │
+│ Checking pod default-node-labeller-flkhx                                                                                                                     │
+│ Checking pod coredns-monitor-pg7m9                                                                                                                           │
+│ Checking pod kube-proxy-ctr-mlse-b40-05                                                                                                                      │
+│ Checking pod rke2-ingress-nginx-controller-tkrps                                                                                                             │
+│ All CI pods on node ctr-mlse-b40-05 are cleaned up                                                                                                           │
+│ Checked node ctr-mlse-b40-05: CI pods cleaned up: True                                                                                                       │
+│ All CI pods on node ctr-mlse-b40-05 are cleaned up. Rebooting node ctr-mlse-b40-05...                                                                        │
+│ Rebooting node ctr-mlse-b40-05                                                                                                                               │
+│ Draining node ctr-mlse-b40-05                              
+
+......
+
+
 
 ```
 
