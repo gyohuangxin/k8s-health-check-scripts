@@ -46,9 +46,9 @@ If all CI jobs have been cleaned up, the node will be rebooted using Platipy; if
 │ Draining node ctr-mlse-b40-05                              
 
 ......
-
-
-
+│
+│ Trying to reboot node ctr-mlse-b40-05 by running nsenter --target 1 --mount --uts --ipc --net --pid reboot                                                   │
+│ Stream closed EOF for gpu-health-checker/gpu-node-reboot-agent-tjr7c (node-reboot-checker)     
 ```
 
 If CI jobs is not cleaned up, it will skip rebooting:
