@@ -6,13 +6,13 @@
 A DaemonSet responsible for monitoring and addressing AMD GPU performance issues on cluster nodes.
 
 Main features:
-- Checks for the presence and correct functioning of `rocm-smi` and `rocminfo` tools to validate GPU health.
-- Searches dmesg logs for GPU performance issues such as Runlist oversubscription, evicted queue buffers, hardware exceptions, or GPU hang/memory faults.
-- Assesses the network health of the node by checking download/upload bandwidth using `speedtest-cli` (customizable threshold, defaults: download ≥ 100 Mbps, upload ≥ 50 Mbps).
+- Verifies the availability of the `rocm-smi` and `rocminfo` tools to assess GPU health. If the check fails, the node is automatically labeled with `gpu-failure=true` and tainted with `repair-reboot`. 
+- Searches dmesg logs for GPU performance issues such as Runlist oversubscription, evicted queue buffers, hardware exceptions, or GPU hang/memory faults. If the check fails, the node is automatically labeled with `gpu-performance-issue=true`.
+- Assesses the network health of the node by checking bandwidth using `speedtest-cli`. If the check fails, the node is automatically labeled with `network-slow=true`
 - When GPU health problems are detected, the script auto-labels the node (e.g., `gpu-failure`) and applies a `repair-reboot` taint. These taints/labels are removed automatically upon recovery.
 
 **gpu-node-reboot-agent:**  
-Another DaemonSet that checks for running CI workload pods (e.g., `actions-ephemeral-runner` or Jenkins agents) on each GPU node. Every 3 hours, if there are no such pods, it will reboot the node using either the platypi tool or system-level reboots.
+Another DaemonSet that checks for running CI workload pods (e.g., `actions-ephemeral-runner` or Jenkins pods) on each GPU node. Every 3 hours, if there are no such pods, it will reboot the node using either the platypi tool or system-level reboots.
 
 ## Usage
 
