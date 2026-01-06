@@ -429,9 +429,34 @@ spec:
                   return True
 
               def drain_node(node_name):
-                 # TODO: Implement the drain node logic
-                 pass
-                 
+                  # Mark node as unschedulable (cordon)
+                  print(f"Draining node {node_name}", flush=True)
+                  body = {"spec": {"unschedulable": True}}
+                  v1.patch_node(node_name, body)
+                  print(f"Node {node_name} cordoned successfully", flush=True)
+
+                  print(f"Evicting all pods on node {node_name}", flush=True)
+                  pods = v1.list_pod_for_all_namespaces(field_selector=f"spec.nodeName={node_name}").items
+                  for pod in pods:
+                      controller_kind = None
+                      if pod.metadata.owner_references:
+                          controller_kind = pod.metadata.owner_references[0].kind
+                      is_daemonset = controller_kind == "DaemonSet"
+                      is_mirror_pod = pod.metadata.annotations and "kubernetes.io/config.mirror" in pod.metadata.annotations
+                      if is_daemonset or is_mirror_pod:
+                          continue
+                      print(f"Evicting pod {pod.metadata.name}", flush=True)
+                      eviction = client.V1Eviction(
+                          metadata=client.V1ObjectMeta(name=pod.metadata.name, namespace=pod.metadata.namespace),
+                          delete_options=client.V1DeleteOptions()
+                      )
+                      try:
+                          v1.create_namespaced_pod_eviction(name=pod.metadata.name, namespace=pod.metadata.namespace, body=eviction)
+                          print(f"Pod {pod.metadata.name} evicted successfully", flush=True)
+                      except client.exceptions.ApiException as e:
+                          print(f"Error evicting pod {pod.metadata.name}: {e}", flush=True)
+                  print(f"All pods on node {node_name} evicted successfully", flush=True)
+
               def reboot_node(node_name):
                 print(f"Rebooting node {node_name}", flush=True)
                 try:
